@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.special import logsumexp
 from typing import List, Dict
+from .util import signed_log, add_log_space, sub_log_space, mul_log_space, div_log_space
 
 # Will be filled in by methods decorated with implements
 HANDLED_FUNCTIONS = {}
@@ -17,9 +18,9 @@ def implements(np_function):
 
 
 class LogArray(np.lib.mixins.NDArrayOperatorsMixin):
-    def __init__(self, log_values=np.ndarray, sign: np.ndarray = 1):
+    def __init__(self, log_values=np.ndarray, signs: np.ndarray = 1):
         self._log_values = log_values
-        self._sign = sign
+        self._signs = signs
 
     @property
     def shape(self):
@@ -30,16 +31,16 @@ class LogArray(np.lib.mixins.NDArrayOperatorsMixin):
         return self._log_values.size
 
     def copy(self):
-        return self.__class__(self._log_values.copy(), self._sign)
+        return self.__class__(self._log_values.copy(), self._signs)
 
     def __len__(self):
         return self.shape[0]
 
     def __getitem__(self, idx):
-        return self.__class__(self._log_values[idx], self._sign)
+        return self.__class__(self._log_values[idx], self._signs)
 
     def __str__(self):
-        return f'log_array({self._sign}{np.exp(self._log_values)})'
+        return f'log_array({self.to_array()})'
 
     def __array_ufunc__(self, ufunc: callable, method: str, *inputs, **kwargs):
         """Handle numpy unfuncs called on the runlength array
@@ -56,19 +57,21 @@ class LogArray(np.lib.mixins.NDArrayOperatorsMixin):
         if method not in ("__call__"):
             return NotImplemented
         if ufunc == np.log:
-            return self._log_values
+            return np.where(self._signs == 1, self._log_values, np.NaN)
         assert len(inputs) == 2, f"Only unary and binary operations supported for runlengtharray {len(inputs)}"
-        inputs = [as_log_array(i)._log_values for i in inputs]
+        inputs = [as_log_array(i) for i in inputs]
+        a, signa, b, signb = inputs[0]._log_values, inputs[0]._signs, inputs[1]._log_values, inputs[1]._signs
         if ufunc == np.add:
-            return self.__class__(
-                np.logaddexp(*inputs, **kwargs))
+            log_values, signs = add_log_space(a, signa, b, signb)
+            return self.__class__(log_values, signs)
         if ufunc == np.multiply:
-            return self.__class__(
-                np.add(*inputs, **kwargs))
+            log_values, signs = mul_log_space(a, signa, b, signb)
+            return self.__class__(log_values, signs)
         if ufunc == np.divide:
-            return self.__class__(
-                np.subtract(*inputs, **kwargs))
+            log_values, signs = div_log_space(a, signa, b, signb)
+            return self.__class__(log_values, signs)
         if ufunc == np.subtract:
+<<<<<<< Updated upstream
             return self.__class__(
                 *logsumexp(inputs, b=np.array([1, -1]).reshape((2, ) + tuple(1 for d in self.shape)), return_sign=True, axis=0))
         if ufunc == np.matmul:
@@ -78,6 +81,10 @@ class LogArray(np.lib.mixins.NDArrayOperatorsMixin):
                 logsumexp(a[..., np.newaxis]+b, axis=1))
                     
             
+=======
+            log_values, signs = sub_log_space(a, signa, b, signb)
+            return self.__class__(log_values, signs)
+>>>>>>> Stashed changes
         return NotImplemented
 
     def __array_function__(self, func: callable, types: List, args: List, kwargs: Dict):
@@ -89,7 +96,7 @@ class LogArray(np.lib.mixins.NDArrayOperatorsMixin):
         return NotImplemented
 
     def to_array(self):
-        return self._sign*np.exp(self._log_values)
+        return self._signs * np.exp(self._log_values)
 
 
 @implements(np.pad)
@@ -107,27 +114,29 @@ def as_log_array(array):
 def log_array(array):
     if isinstance(array, LogArray):
         return array.copy()
-    print('a', array)
-    return LogArray(np.log(array))
+    #print('a', array)
+    log_values, signs = signed_log(array)
+    return LogArray(log_values, signs)
 
 
 @implements(np.sum)
 def sum(*args, **kwargs):
     arrays = [as_log_array(a) for a in args]
     args = [a._log_values for a in arrays]
+    # TODO add b stuff to handle signs
     return LogArray(logsumexp(*args, **kwargs))
 
 
 @implements(np.zeros_like)
 def zeros_like(array):
-    return LogArray(np.full_like(array._log_values, -np.inf))
+    return LogArray(np.full_like(array._log_values, -np.inf), 1)
 
 
 @implements(np.ones_like)
 def ones_like(array):
-    return LogArray(np.zeros_like(array._log_values))
+    return LogArray(np.zeros_like(array._log_values), 1)
 
 
 @implements(np.full_like)
 def full_like(array, value):
-    return LogArray(np.full_like(array._log_values, np.log(value)))
+    return LogArray(np.full_like(array._log_values, np.log(np.abs(value))), np.sign(value))
